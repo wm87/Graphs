@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="de">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Interaktiver Funktionsplotter</title>
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.7.0/jspdf.plugin.autotable.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.datatables.net/1.13.6/css/jquery.dataTables.min.css">
+    <script src="https://cdn.datatables.net/1.13.6/js/jquery.dataTables.min.js"></script>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/11.8.0/math.min.js"></script>
+
+    <style>
+        body {
+            background: #f4f6f8;
+            font-family: 'Segoe UI', sans-serif;
+            text-align: center;
+            margin: 20px;
+        }
+
+        canvas {
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            margin-bottom: 20px;
+            width: 100%;
+            /* Damit das Canvas immer in der Breite anpasst */
+            height: auto;
+            /* Höhe wird automatisch angepasst */
+        }
+
+        .filter-container {
+            margin-bottom: 20px;
+        }
+
+        #functionInput {
+            padding: 12px;
+            border-radius: 8px;
+            font-size: 16px;
+            width: 80%;
+            /* Eingabefeld nimmt 80% der Breite ein */
+            max-width: 500px;
+            /* Maximale Breite */
+        }
+
+        #button-container {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 12px;
+            margin-bottom: 20px;
+        }
+
+        #button-container button,
+        #button-container select {
+            padding: 12px 18px;
+            background-color: #f0e3dc;
+            color: rgb(0, 0, 0);
+            border: 1px solid black;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: background 0.3s;
+            min-width: 200px;
+        }
+
+        #button-container button:hover,
+        #button-container select:hover {
+            background-color: #ccd481;
+        }
+
+        table.dataTable thead th {
+            background-color: #6c8297;
+            color: #fff;
+        }
+
+        #zeros-container,
+        #extrema-container,
+        #table-container {
+            margin-top: 20px;
+            text-align: left;
+            max-width: 1000px;
+            margin-inline: auto;
+        }
+
+        h2,
+        h3 {
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        #error-container {
+            color: red;
+            font-weight: bold;
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h2>📈 Interaktiver Funktionsplotter mit Analyse</h2>
+
+    <div class="filter-container">
+        <label for="functionInput">Funktionen eingeben:</label>
+        <input type="text" id="functionInput" placeholder="z.B. x^2, sin(x)">
+    </div>
+
+    <div id="button-container">
+        <button id="plotBtn">Plotten</button>
+    </div>
+
+    <canvas id="myChart" width="900" height="500"></canvas>
+
+    <div id="button-container">
+        <button id="findZeros">🔎 Nullstellen</button>
+        <button id="resetZeros">❌ Nullstellen löschen</button>
+        <button id="findExtrema">🔎 Extremstellen</button>
+        <button id="resetExtrema">❌ Extremstellen löschen</button>
+        <button id="resetZoom">🔄 Zoom Reset</button>
+        <button id="exportPNG">📥 PNG Export</button>
+        <button id="exportCSV">📥 CSV Export</button>
+        <button id="exportPDF">📥 PDF Export</button>
+    </div>
+
+    <div id="button-container">
+        <select id="filterFunc">
+            <option value="all">Alle Funktionen</option>
+        </select>
+    </div>
+
+    <div id="error-container"></div>
+    <div id="zeros-container"></div>
+    <div id="extrema-container"></div>
+    <div id="table-container"></div>
+
+    <script>
+        const ctx = document.getElementById('myChart').getContext('2d');
+        let datasets = [], foundZeros = [], foundExtrema = [], errorFunctions = [];
+
+        const zeroDataset = {
+            label: 'Nullstellen',
+            data: [],
+            pointBackgroundColor: 'red',
+            pointBorderColor: 'red',
+            pointStyle: 'cross',
+            pointRadius: 8,
+            pointBorderWidth: 2,
+            showLine: false,
+            type: 'scatter'
+        };
+
+        const extremaDataset = {
+            label: 'Extremstellen',
+            data: [],
+            pointRadius: 8,
+            showLine: false,
+            type: 'scatter',
+            backgroundColor: []
+        };
+
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: { datasets: [] },
+            options: {
+                responsive: true,
+                interaction: { mode: 'nearest' },
+                scales: { x: { type: 'linear', min: -10, max: 10 }, y: { min: -10, max: 10 } },
+                plugins: {
+                    legend: { labels: { usePointStyle: true } },
+                    tooltip: { callbacks: { label: ctx => `x: ${ctx.parsed.x.toFixed(2)}, y: ${ctx.parsed.y !== null ? ctx.parsed.y.toFixed(2) : 'undefiniert'}` } },
+                    zoom: {
+                        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'xy' },
+                        pan: { enabled: true, mode: 'xy' }
+                    }
+                }
+            }
+        });
+
+        function updateSpecialPointsVisibility() {
+            const visibleFuncs = datasets.filter((ds, i) => !chart.getDatasetMeta(i + 2).hidden).map(ds => ds.label);
+            zeroDataset.data.forEach(z => z.hidden = !visibleFuncs.includes(z.func));
+            extremaDataset.data.forEach((e, i) => {
+                e.hidden = !visibleFuncs.includes(foundExtrema[i].func);
+            });
+        }
+
+        function computeY(fx, x) {
+            try {
+                let expr = fx.replace(/x/g, `(${x})`)
+                    .replace(/cot\((.*?)\)/g, '1/Math.tan($1)');
+                // Umwandlung von Potenzen x^3 -> Math.pow(x,3)
+                expr = expr.replace(/(\([^()]+\)|[a-zA-Z0-9.]+)\s*\^\s*([\-]?\d+)/g, 'Math.pow($1,$2)');
+                if (/sin|cos|tan|cot/.test(fx)) expr = `Math.${expr}`;
+                let y = eval(expr);
+                if (isNaN(y) || !isFinite(y)) throw new Error("Ungültiger Wert");
+                return y;
+            } catch {
+                throw new Error(`Fehler in Funktion: ${fx}`);
+            }
+        }
+
+        function generateData(fx) {
+            let step = 0.02;
+            let data = [];
+            let lastY = null;
+            const asymptoteThreshold = 10; // Schwellenwert für Sprung-Erkennung
+            for (let x = -10; x <= 10; x += step) {
+                try {
+                    let y = computeY(fx, x);
+                    if (lastY !== null && Math.abs(y - lastY) > asymptoteThreshold) {
+                        // Asymptote erkannt - Lücke erzeugen
+                        data.push({ x, y: null });
+                        lastY = null;
+                    } else {
+                        data.push({ x, y });
+                        lastY = y;
+                    }
+                } catch {
+                    data.push({ x, y: null }); // NaN/Inf -> Lücke
+                    lastY = null;
+                }
+            }
+            return data;
+        }
+
+        function adjustScaling() {
+            // Berechne die minimalen und maximalen x- und y-Werte
+            let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+
+            // Durchlaufe alle Daten und bestimme die min/max Werte für x und y
+            datasets.forEach(ds => {
+                ds.data.forEach(point => {
+                    if (point.x < xMin) xMin = point.x;
+                    if (point.x > xMax) xMax = point.x;
+                    if (point.y < yMin) yMin = point.y;
+                    if (point.y > yMax) yMax = point.y;
+                });
+            });
+
+            // Falls keine Werte gefunden wurden, setze Standardwerte
+            if (xMin === Infinity) xMin = -10;
+            if (xMax === -Infinity) xMax = 10;
+            if (yMin === Infinity) yMin = -50;
+            if (yMax === -Infinity) yMax = 50;
+
+            // Update den Chart
+            chart.update();
+        }
+
+        // Funktion zum Hinzufügen von Funktionen
+        $('#plotBtn').click(() => {
+            chart.resetZoom();
+            let input = $('#functionInput').val();
+            if (!input) return;
+
+            resetZeros();
+            resetExtrema();
+
+            datasets = [];
+            errorFunctions = [];
+            let functions = input.split(',');
+            $('#filterFunc').html('<option value="all">Alle Funktionen</option>');
+
+            $.each(functions, function (index, func) {
+                let trimmed = func.trim();
+                let data = generateData(trimmed);
+                if (data) {
+                    datasets.push({
+                        label: trimmed,
+                        data: data,
+                        borderColor: getRandomColor(),
+                        fill: false,
+                        spanGaps: false,
+                        tension: 0.1,
+                        parsing: { xAxisKey: 'x', yAxisKey: 'y' }
+                    });
+                    $('#filterFunc').append(`<option value="${trimmed}">${trimmed}</option>`);
+                } else {
+                    errorFunctions.push(trimmed);
+                }
+            });
+
+            if (errorFunctions.length > 0) {
+                $('#error-container').html("Folgende Funktionen sind ungültig und wurden ignoriert:<br>" + errorFunctions.join(", "));
+            } else {
+                $('#error-container').html("");
+            }
+
+            updateChartAndTable();
+            resetZeros();
+            resetExtrema();
+            adjustScaling();  // Dynamische Skalierung nach dem Hinzufügen von Funktionen
+        });
+
+
+        $('#findZeros').click(() => {
+            resetZeros();  // Löscht vorherige Nullstellen
+            datasets.forEach(ds => {
+                let data = ds.data;
+                for (let i = 1; i < data.length; i++) {
+                    // Prüfen, ob keiner der beiden benachbarten Punkte eine Lücke hat (y !== null)
+                    if (data[i - 1].y !== null && data[i].y !== null && data[i - 1].y * data[i].y <= 0) {
+                        let zeroX = interpolateZero(data[i - 1], data[i]);
+                        if (zeroX !== null) markZero(zeroX, ds.label);
+                    }
+                }
+            });
+            renderZerosList();
+            chart.update();
+        });
+
+        function interpolateZero(p1, p2) {
+            // Interpoliert zwischen den beiden benachbarten Punkten, um den Nullpunkt zu finden
+            let x = p1.x - (p1.y * (p2.x - p1.x)) / (p2.y - p1.y);
+            return isFinite(x) ? x : null;
+        }
+
+
+        function markZero(x, funcLabel) {
+            zeroDataset.data.push({ x, y: 0, func: funcLabel });
+            foundZeros.push({ x, func: funcLabel });
+        }
+
+        function renderZerosList() {
+            let selectedFunc = $('#filterFunc').val();
+            let html = "<h3>Gefundene Nullstellen:</h3>";
+            let filtered = foundZeros.filter(z => selectedFunc === 'all' || z.func === selectedFunc);
+            html += filtered.length === 0 ? "Keine Nullstellen gefunden." :
+                filtered.map(z => `Funktion: ${z.func} ➔ x = ${z.x.toFixed(3)}`).join('<br>');
+            $('#zeros-container').html(html);
+        }
+
+        $('#resetZeros').click(() => { resetZeros(); renderZerosList(); chart.update(); });
+
+        function resetZeros() {
+            foundZeros = [];
+            zeroDataset.data = [];
+        }
+
+        // Funktion zum Finden von Extremstellen
+        // Exakte Extremstellen-Berechnung mit math.js
+        $('#findExtrema').click(() => {
+            resetExtrema(); // Vorherige Ergebnisse löschen
+
+            datasets.forEach(ds => {
+                const funcStr = ds.label; // Funktions-String z.B. 'x^5'
+                const f = math.parse(funcStr).compile();
+                const df = math.derivative(funcStr, 'x').compile();     // 1. Ableitung
+                const d2f = math.derivative(math.derivative(funcStr, 'x'), 'x').compile(); // 2. Ableitung
+
+                const data = ds.data;
+
+                for (let i = 0; i < data.length; i++) {
+                    const x = data[i].x;
+                    const y = f.evaluate({ x });
+                    const dy = df.evaluate({ x });
+                    const d2y = d2f.evaluate({ x });
+
+                    // Toleranzen für numerische Berechnung
+                    const dyEpsilon = 0.01;
+                    const d2yEpsilon = 0.001;
+
+                    // Extremstellen (Hoch- oder Tiefpunkt): dy ≈ 0, d2y != 0
+                    if (Math.abs(dy) < dyEpsilon && Math.abs(d2y) > d2yEpsilon) {
+
+                        const type = d2y < 0 ? 'Hochpunkt' : 'Tiefpunkt';
+                        const color = d2y < 0 ? 'green' : 'blue';
+
+                        extremaDataset.data.push({ x, y, func: funcStr });
+                        extremaDataset.backgroundColor.push(color);
+                        foundExtrema.push({ x, y, type, func: funcStr });
+                    }
+
+                    // Sattelpunkt / Wendepunkt: dy ≈ 0 und d2y ≈ 0
+                    else if (Math.abs(dy) < dyEpsilon && Math.abs(d2y) < d2yEpsilon) {
+                        extremaDataset.data.push({ x, y, func: funcStr });
+                        extremaDataset.backgroundColor.push('orange');
+                        foundExtrema.push({ x, y, type: 'Sattelpunkt', func: funcStr });
+                    }
+                }
+            });
+
+            renderExtremaList();
+            chart.update();
+        });
+
+
+        // Funktion zum Rendern der Extremstellen-Liste
+        function renderExtremaList() {
+            let selectedFunc = $('#filterFunc').val();
+            let html = "<h3>Gefundene Extremstellen:</h3>";
+            let filtered = foundExtrema.filter(e => selectedFunc === 'all' || e.func === selectedFunc);
+            html += filtered.map(e => {
+                let xVal = (e.x != null && !isNaN(e.x)) ? e.x.toFixed(3) : 'N/A';
+                let yVal = (e.y != null && !isNaN(e.y)) ? e.y.toFixed(3) : 'N/A';
+                return `${e.type} bei ${e.func} ➔ x = ${xVal}, y = ${yVal}`;
+            }).join('<br>');
+            $('#extrema-container').html(html);
+        }
+
+        $('#resetExtrema').click(() => {
+            resetExtrema();
+            renderExtremaList();
+            chart.update();
+        });
+
+        function resetExtrema() {
+            foundExtrema = [];
+            extremaDataset.data = [];
+            extremaDataset.backgroundColor = [];
+        }
+
+        function getRandomColor() {
+            return `hsl(${Math.random() * 360}, 70%, 50%)`;
+        }
+
+        $('#resetZoom').click(() => {
+            chart.resetZoom();
+        });
+
+        $('#exportPNG').click(() => {
+            let link = document.createElement('a');
+            link.href = chart.toBase64Image();
+            link.download = 'funktionsplot.png';
+            link.click();
+        });
+
+        $('#exportCSV').click(() => {
+            let csv = "Funktion,x,y\n";
+            datasets.forEach(ds => {
+                ds.data.forEach(point => csv += `${ds.label},${point.x},${point.y}\n`);
+            });
+            let blob = new Blob([csv], { type: 'text/csv' });
+            let url = URL.createObjectURL(blob);
+            $('<a>').attr('href', url).attr('download', 'funktionsdaten.csv').appendTo('body')[0].click();
+        });
+
+        $('#exportPDF').click(() => {
+            const { jsPDF } = window.jspdf;
+            let doc = new jsPDF();
+            doc.text('Funktionsplotter', 14, 10);
+            doc.addImage(chart.toBase64Image(), 'PNG', 10, 20, 180, 80);
+            doc.autoTable({ html: '#wertetabelle', startY: 110, styles: { fontSize: 8 } });
+            doc.save('funktionsdaten.pdf');
+        });
+
+        function updateChartAndTable() {
+            chart.data.datasets = [zeroDataset, extremaDataset, ...datasets];
+            chart.update();
+            renderTable();
+        }
+
+        function renderTable() {
+            let html = "<h3>Wertetabelle</h3><table id='wertetabelle' class='display'><thead><tr><th>Funktion</th><th>x</th><th>y</th></tr></thead><tbody>";
+            let selectedFunc = $('#filterFunc').val();
+
+            datasets.forEach((ds, idx) => {
+                if (selectedFunc !== 'all' && ds.label !== selectedFunc) return;
+                if (chart.getDatasetMeta(idx + 2).hidden) return;
+
+                ds.data.forEach(p => {
+                    // Sicherstellen, dass x und y vorhanden und keine NaN sind
+                    const xVal = (p.x !== null && !isNaN(p.x)) ? p.x.toFixed(3) : '—';
+                    const yVal = (p.y !== null && !isNaN(p.y)) ? p.y.toFixed(3) : '—';
+                    html += `<tr><td>${ds.label}</td><td>${xVal}</td><td>${yVal}</td></tr>`;
+                });
+            });
+
+            html += "</tbody></table>";
+            $('#table-container').html(html);
+            $('#wertetabelle').DataTable({ searching: false, pageLength: 5, lengthMenu: [5, 10, 20, 50], destroy: true });
+        }
+
+
+        $('#filterFunc').change(() => {
+            renderTable();
+            renderZerosList();
+            renderExtremaList();
+        });
+    </script>
+
+</body>
+
+</html>
